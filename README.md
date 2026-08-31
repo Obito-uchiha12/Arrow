@@ -14,5 +14,8 @@ Early development / v0.1.0
 - Multiple puzzle levels
 - Customizable arrow color and board themes
 
+## Releases
+Installable APK builds are published under [GitHub Releases](../../releases).
+
 ---
 *Note: This project is under active development.*
