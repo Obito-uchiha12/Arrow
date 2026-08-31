@@ -15,7 +15,13 @@ Early development / v0.1.0
 - Customizable arrow color and board themes
 
 ## Releases
-Installable APK builds are published under [GitHub Releases](../../releases).
+Installable APK builds are automatically published under GitHub Releases when version tags are pushed.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+This triggers the GitHub Actions release workflow to compile and upload `ArrowPuzzle-v0.1.0.apk` directly to GitHub Release Assets.
 
 ---
 *Note: This project is under active development.*

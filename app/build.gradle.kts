@@ -25,11 +25,11 @@ android {
 
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+      val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH") ?: System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
       storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
+      storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: System.getenv("STORE_PASSWORD")
+      keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "upload"
+      keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: System.getenv("KEY_PASSWORD")
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -45,7 +45,12 @@ android {
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       val releaseConfig = signingConfigs.getByName("release")
-      signingConfig = if (releaseConfig.storeFile?.exists() == true && !System.getenv("STORE_PASSWORD").isNullOrBlank()) {
+      val hasKeystore = releaseConfig.storeFile?.exists() == true
+      val hasStorePass = !System.getenv("ANDROID_KEYSTORE_PASSWORD").isNullOrBlank() || !System.getenv("STORE_PASSWORD").isNullOrBlank()
+      val hasKeyAlias = !System.getenv("ANDROID_KEY_ALIAS").isNullOrBlank()
+      val hasKeyPass = !System.getenv("ANDROID_KEY_PASSWORD").isNullOrBlank() || !System.getenv("KEY_PASSWORD").isNullOrBlank()
+
+      signingConfig = if (hasKeystore && hasStorePass && hasKeyAlias && hasKeyPass) {
         releaseConfig
       } else {
         signingConfigs.getByName("debugConfig")

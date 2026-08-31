@@ -1,4 +1,4 @@
-name: Android Release APK
+name: Android Release Pipeline
 
 on:
   push:
@@ -28,48 +28,92 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Ensure Gradle Wrapper Executable
+      - name: Make Gradle Wrapper Executable
         run: |
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
           fi
 
-      - name: Configure Keystore from Secrets (if provided)
-        id: keystore_config
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      - name: Validate Tag & Android Version
+        id: version_check
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "Decoding release keystore from secrets..."
-            echo "$KEYSTORE_BASE64" | base64 -d > "${{ github.workspace }}/release.keystore"
-            echo "KEYSTORE_PATH=${{ github.workspace }}/release.keystore" >> $GITHUB_ENV
+          TAG_NAME="${GITHUB_REF_NAME}"
+          TAG_VERSION="${TAG_NAME#v}"
+          
+          # Extract versionName from app/build.gradle.kts
+          GRADLE_VERSION=$(grep -E 'versionName\s*=\s*"[^"]+"' app/build.gradle.kts | sed -E 's/.*versionName\s*=\s*"([^"]+)".*/\1/' | head -n 1)
+          
+          echo "=========================================="
+          echo "Pushed Tag:         $TAG_NAME"
+          echo "Parsed Tag Version: $TAG_VERSION"
+          echo "Gradle VersionName: $GRADLE_VERSION"
+          echo "=========================================="
+          
+          if [ -z "$GRADLE_VERSION" ]; then
+            echo "::error::Could not extract versionName from app/build.gradle.kts"
+            exit 1
+          fi
+          
+          if [ "$TAG_VERSION" != "$GRADLE_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match app/build.gradle.kts versionName ($GRADLE_VERSION)!"
+            exit 1
+          fi
+          
+          echo "version=$TAG_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Setup Conditional Keystore Signing
+        id: keystore_setup
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          # Count provided signing secrets
+          COUNT=0
+          [ -n "$KEYSTORE_BASE64" ] && COUNT=$((COUNT+1))
+          [ -n "$KEYSTORE_PASS" ] && COUNT=$((COUNT+1))
+          [ -n "$KEY_ALIAS" ] && COUNT=$((COUNT+1))
+          [ -n "$KEY_PASS" ] && COUNT=$((COUNT+1))
+
+          if [ "$COUNT" -eq 4 ]; then
+            echo "All 4 Android production signing secrets detected. Enabling production keystore."
+            TEMP_KEYSTORE="${RUNNER_TEMP}/arrow-puzzle-release.keystore"
+            echo "$KEYSTORE_BASE64" | base64 -d > "$TEMP_KEYSTORE"
+            
+            echo "ANDROID_KEYSTORE_PATH=$TEMP_KEYSTORE" >> $GITHUB_ENV
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASS" >> $GITHUB_ENV
+            echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> $GITHUB_ENV
+            echo "ANDROID_KEY_PASSWORD=$KEY_PASS" >> $GITHUB_ENV
+            echo "is_custom_signing=true" >> $GITHUB_OUTPUT
+            echo "keystore_file=$TEMP_KEYSTORE" >> $GITHUB_OUTPUT
+          elif [ "$COUNT" -eq 0 ]; then
+            echo "No production signing secrets provided. Using fallback signing configuration (debug keystore)."
+            echo "is_custom_signing=false" >> $GITHUB_OUTPUT
           else
-            echo "No custom release keystore secret found. Build will use debug keystore signing."
+            echo "::error::Incomplete signing secrets provided! Found $COUNT of 4 required secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD)."
+            exit 1
           fi
 
       - name: Build Release APK
-        env:
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           if [ -f "./gradlew" ]; then
-            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+            ./gradlew clean :app:assembleRelease --no-daemon --stacktrace
           else
-            gradle :app:assembleRelease --no-daemon --stacktrace
+            gradle clean :app:assembleRelease --no-daemon --stacktrace
           fi
 
-      - name: Discover and Prepare Release APK
+      - name: Locate, Rename, and Validate Release APK
         id: prepare_apk
         run: |
           echo "Scanning for generated release APK..."
-          # Find the release APK output
           APK_FILE=$(find app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
           if [ -z "$APK_FILE" ] || [ ! -f "$APK_FILE" ]; then
             APK_FILE=$(find . -path "*/build/outputs/apk/*" -type f -name "*release*.apk" | head -n 1)
           fi
 
           if [ -z "$APK_FILE" ] || [ ! -f "$APK_FILE" ]; then
-            echo "::error::Release APK was not found after assembleRelease task completed."
+            echo "::error::Release APK was not found after assembleRelease build."
             exit 1
           fi
 
@@ -85,7 +129,7 @@ jobs:
 
           echo "=========================================="
           echo "Discovered APK: $APK_FILE"
-          echo "Package Size:   $FILE_SIZE bytes"
+          echo "APK File Size:  $FILE_SIZE bytes"
           echo "Release Asset:  $DEST_APK_NAME"
           echo "=========================================="
 
@@ -93,7 +137,15 @@ jobs:
           echo "apk_name=$DEST_APK_NAME" >> $GITHUB_OUTPUT
           echo "apk_size=$FILE_SIZE" >> $GITHUB_OUTPUT
 
-      - name: Check Pre-release Status
+      - name: Cleanup Temporary Keystore
+        if: always()
+        run: |
+          if [ -n "${{ steps.keystore_setup.outputs.keystore_file }}" ] && [ -f "${{ steps.keystore_setup.outputs.keystore_file }}" ]; then
+            echo "Cleaning up temporary CI release keystore..."
+            rm -f "${{ steps.keystore_setup.outputs.keystore_file }}"
+          fi
+
+      - name: Determine Pre-release Status
         id: prerelease_status
         run: |
           TAG="${GITHUB_REF_NAME}"
@@ -102,10 +154,10 @@ jobs:
             echo "Release status: PRE-RELEASE"
           else
             echo "is_prerelease=false" >> $GITHUB_OUTPUT
-            echo "Release status: PRODUCTION"
+            echo "Release status: PRODUCTION RELEASE"
           fi
 
-      - name: Create GitHub Release and Upload APK
+      - name: Create or Update GitHub Release and Upload APK
         uses: softprops/action-gh-release@v2
         with:
           name: "Arrow Puzzle ${{ github.ref_name }}"
@@ -113,6 +165,7 @@ jobs:
           prerelease: ${{ steps.prerelease_status.outputs.is_prerelease == 'true' }}
           files: ${{ steps.prepare_apk.outputs.apk_path }}
           generate_release_notes: true
+          make_latest: ${{ steps.prerelease_status.outputs.is_prerelease != 'true' }}
           body: |
             # Arrow Puzzle
 
@@ -120,7 +173,8 @@ jobs:
 
             **Version:** `${{ github.ref_name }}`  
             **APK Artifact:** `${{ steps.prepare_apk.outputs.apk_name }}`  
-            **File Size:** `${{ steps.prepare_apk.outputs.apk_size }} bytes`
+            **File Size:** `${{ steps.prepare_apk.outputs.apk_size }} bytes`  
+            **Signing:** ${{ steps.keystore_setup.outputs.is_custom_signing == 'true' && 'Production Keystore Signed' || 'Fallback (Debug Keystore Signed)' }}
 
             ### Included
             - Offline arrow puzzle mechanics
