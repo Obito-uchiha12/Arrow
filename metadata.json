@@ -1,0 +1,7 @@
+{
+  "name": "Arrow Puzzle",
+  "description": "An offline-first minimalist 2D directional arrow tap puzzle game featuring 1000+ levels of intricate silhouette challenges.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
